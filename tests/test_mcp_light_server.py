@@ -783,3 +783,88 @@ class TestHubDispatch:
         assert captured["name"] == "mempalace_traverse"
         assert captured["arguments"]["start_room"] == "auth-flow"
         assert captured["arguments"]["max_hops"] == 3
+
+    def test_tools_list_schema_includes_hardened_fields(self, monkeypatch, config, kg):
+        _patch_light_server(monkeypatch, config, kg)
+        req = {"jsonrpc": "2.0", "id": 98, "method": "tools/list"}
+        res = mcp_light_server.handle_light_request(req)
+        tools = {t["name"]: t for t in res["result"]["tools"]}
+
+        exec_schema = tools["palace_exec"]["inputSchema"]["properties"]
+        assert "agent_name" in exec_schema
+        assert "entry" in exec_schema
+        assert "at" in exec_schema
+        assert "old_object" in exec_schema
+        assert "new_object" in exec_schema
+
+        assert "authorized mutations" in tools["palace_exec"]["description"]
+        assert "NEVER use palace_coordinate for reads" in tools["palace_query"]["description"]
+        assert "DO NOT use for reading memories" in tools["palace_coordinate"]["description"]
+
+    def test_palace_exec_structured_diary_write(self, monkeypatch, config, kg):
+        _patch_light_server(monkeypatch, config, kg)
+        req = {
+            "jsonrpc": "2.0",
+            "id": 99,
+            "method": "tools/call",
+            "params": {
+                "name": "palace_exec",
+                "arguments": {
+                    "action": "diary_write",
+                    "agent_name": "medgemma",
+                    "entry": "Patient HbA1c 7.4% stable",
+                    "topic": "clinical",
+                },
+            },
+        }
+        res = mcp_light_server.handle_light_request(req)
+        assert res["id"] == 99
+        payload = json.loads(res["result"]["content"][0]["text"])
+        assert payload.get("success") is True or "drawer_id" in payload or "entry_id" in payload
+
+    def test_palace_exec_structured_kg_supersede(self, monkeypatch, config, kg):
+        _patch_light_server(monkeypatch, config, kg)
+        kg.add_triple("Max", "grade", "6", valid_from="2025-01-01")
+        req = {
+            "jsonrpc": "2.0",
+            "id": 100,
+            "method": "tools/call",
+            "params": {
+                "name": "palace_exec",
+                "arguments": {
+                    "action": "kg_supersede",
+                    "subject": "Max",
+                    "predicate": "grade",
+                    "old_object": "6",
+                    "new_object": "7",
+                },
+            },
+        }
+        res = mcp_light_server.handle_light_request(req)
+        assert res["id"] == 100
+        payload = json.loads(res["result"]["content"][0]["text"])
+        assert payload.get("success") is True
+
+    def test_extract_tool_call_with_thinking_tokens(self):
+        import importlib.util
+        import sys
+        from pathlib import Path
+
+        repo_root = Path(__file__).resolve().parent.parent
+        bench_file = repo_root / "benchmarks" / "test_ollama_medical_private_palace.py"
+        spec = importlib.util.spec_from_file_location("med_bench", bench_file)
+        med_bench = importlib.util.module_from_spec(spec)
+        sys.modules["med_bench"] = med_bench
+        spec.loader.exec_module(med_bench)
+        _extract_tool_call_from_message = med_bench._extract_tool_call_from_message
+
+        raw_medgemma = (
+            "<unused94>thought\nThe user is asking for HbA1c for Patient 1042.\n"
+            "I should query the palace using palace_query.\n<unused95>\n"
+            '{"tool": "palace_query", "arguments": {"target": "search", "query": "HbA1c", "wing": "patient_1042"}}'
+        )
+        msg = {"role": "assistant", "content": raw_medgemma}
+        tool_name, tool_args = _extract_tool_call_from_message(msg)
+        assert tool_name == "palace_query"
+        assert tool_args["target"] == "search"
+        assert tool_args["wing"] == "patient_1042"

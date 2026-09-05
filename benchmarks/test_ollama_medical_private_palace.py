@@ -204,6 +204,15 @@ class MedicalPalaceEnvironment:
         self.collection = self.client.get_or_create_collection(
             "mempalace_drawers", metadata={"hnsw:space": "cosine"}
         )
+
+        self._orig_config = getattr(mcp_server, "_config", None)
+        self._orig_get_kg = getattr(mcp_server, "_get_kg", None)
+        self._orig_taxonomy_cache = getattr(mcp_server, "_taxonomy_cache", None)
+        self._orig_taxonomy_cache_time = getattr(mcp_server, "_taxonomy_cache_time", 0.0)
+        self._orig_read_only = getattr(mcp_server, "_READ_ONLY", False)
+        self._orig_vector_disabled = getattr(mcp_server, "_vector_disabled", False)
+
+        self.patch_globals()
         self._seed_clinical_drawers()
         self._seed_medical_kg()
         self._seed_tunnels()
@@ -235,7 +244,7 @@ class MedicalPalaceEnvironment:
         self.kg.add_triple("Patient_1042", "prescribed", "Lisinopril 10mg", valid_from="2024-02-20")
 
     def _seed_tunnels(self):
-        create_tunnel("patient_1042", "labs", "clinical_guidelines", "diabetes", "Lab to Guideline Escalation", self.palace_path)
+        create_tunnel("patient_1042", "labs", "clinical_guidelines", "diabetes", "Lab to Guideline Escalation", config=self.config)
         invalidate_graph_cache()
 
     def _seed_diaries(self):
@@ -263,6 +272,15 @@ class MedicalPalaceEnvironment:
         except Exception:
             pass
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
+        if self._orig_config is not None:
+            mcp_server._config = self._orig_config
+        if self._orig_get_kg is not None:
+            mcp_server._get_kg = self._orig_get_kg
+        mcp_server._taxonomy_cache = self._orig_taxonomy_cache
+        mcp_server._taxonomy_cache_time = self._orig_taxonomy_cache_time
+        mcp_server._READ_ONLY = self._orig_read_only
+        mcp_server._vector_disabled = self._orig_vector_disabled
+        invalidate_graph_cache()
 
 
 # ── Test Runner & Tool Call Parser ──────────────────────────────────────────
@@ -285,7 +303,7 @@ class ModelEvalResult:
 
 
 def _extract_tool_call_from_message(msg: Dict[str, Any]) -> Tuple[Optional[str], Any]:
-    """Extract tool name and arguments from native tool_calls or markdown text blocks."""
+    """Extract tool name and arguments from native tool_calls, markdown text blocks, or raw JSON."""
     tool_calls = msg.get("tool_calls", [])
     if tool_calls:
         tc = tool_calls[0]
@@ -296,29 +314,53 @@ def _extract_tool_call_from_message(msg: Dict[str, Any]) -> Tuple[Optional[str],
     if not content:
         return None, None
 
+    # Strip thinking tokens (<unused94>...<unused95>, <think>...</think>, etc.)
+    cleaned = re.sub(r"<unused94>.*?<unused95>", "", content, flags=re.DOTALL)
+    cleaned = re.sub(r"<think>.*?</think>", "", cleaned, flags=re.DOTALL).strip()
+    if not cleaned:
+        cleaned = content.strip()
+
+    def _normalize_parsed_dict(parsed: Dict[str, Any]) -> Tuple[str, Any]:
+        tool_name = parsed.get("name") or parsed.get("tool")
+        if tool_name:
+            args = parsed.get("arguments") or parsed.get("parameters") or parsed.get("args")
+            if args is None:
+                args = {k: v for k, v in parsed.items() if k not in ("name", "tool")}
+            return tool_name, args
+        elif "query" in parsed or "target" in parsed:
+            return "palace_query", parsed
+        elif "action" in parsed or "command" in parsed:
+            return "palace_exec", parsed
+        return "palace_query", parsed
+
     # Check for <tool_call> ... </tool_call> or ```tool_call ... ```
-    m = re.search(r"<tool_call>\s*(.*?)\s*</tool_call>", content, re.DOTALL)
+    m = re.search(r"<tool_call>\s*(.*?)\s*</tool_call>", cleaned, re.DOTALL)
     if not m:
-        m = re.search(r"```(?:tool_call|json)?\s*(\{.*?\})\s*```", content, re.DOTALL)
+        m = re.search(r"```(?:tool_call|json)?\s*(\{.*?\})\s*```", cleaned, re.DOTALL)
 
     if m:
         block = m.group(1).strip()
         try:
             parsed = json.loads(block)
-            if isinstance(parsed, dict) and "name" in parsed:
-                return parsed["name"], parsed.get("arguments", {})
-            elif isinstance(parsed, dict) and ("query" in parsed or "target" in parsed):
-                return "palace_query", parsed
-            elif isinstance(parsed, dict) and ("action" in parsed or "command" in parsed):
-                return "palace_exec", parsed
-            return "palace_query", parsed
+            if isinstance(parsed, dict):
+                return _normalize_parsed_dict(parsed)
+        except Exception:
+            pass
+
+    # Check for bare JSON object in cleaned output
+    m_json = re.search(r"(\{[\s\S]*\})", cleaned)
+    if m_json:
+        try:
+            parsed = json.loads(m_json.group(1).strip())
+            if isinstance(parsed, dict):
+                return _normalize_parsed_dict(parsed)
         except Exception:
             pass
 
     # Check for direct PQL command line in output
     for kw in ("FIND", "SEARCH", "TAXONOMY", "WINGS", "KG", "TRAVERSE", "DIARY", "STATUS", "ADD", "UPDATE"):
-        if re.search(rf"\b{kw}\b", content):
-            lines = [line.strip() for line in content.splitlines() if line.strip().startswith(kw)]
+        if re.search(rf"\b{kw}\b", cleaned):
+            lines = [line.strip() for line in cleaned.splitlines() if line.strip().startswith(kw)]
             if lines:
                 cmd = lines[0]
                 if kw in ("ADD", "UPDATE", "DELETE"):
