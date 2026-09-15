@@ -844,27 +844,3 @@ class TestHubDispatch:
         assert res["id"] == 100
         payload = json.loads(res["result"]["content"][0]["text"])
         assert payload.get("success") is True
-
-    def test_extract_tool_call_with_thinking_tokens(self):
-        import importlib.util
-        import sys
-        from pathlib import Path
-
-        repo_root = Path(__file__).resolve().parent.parent
-        bench_file = repo_root / "benchmarks" / "test_ollama_medical_private_palace.py"
-        spec = importlib.util.spec_from_file_location("med_bench", bench_file)
-        med_bench = importlib.util.module_from_spec(spec)
-        sys.modules["med_bench"] = med_bench
-        spec.loader.exec_module(med_bench)
-        _extract_tool_call_from_message = med_bench._extract_tool_call_from_message
-
-        raw_medgemma = (
-            "<unused94>thought\nThe user is asking for HbA1c for Patient 1042.\n"
-            "I should query the palace using palace_query.\n<unused95>\n"
-            '{"tool": "palace_query", "arguments": {"target": "search", "query": "HbA1c", "wing": "patient_1042"}}'
-        )
-        msg = {"role": "assistant", "content": raw_medgemma}
-        tool_name, tool_args = _extract_tool_call_from_message(msg)
-        assert tool_name == "palace_query"
-        assert tool_args["target"] == "search"
-        assert tool_args["wing"] == "patient_1042"

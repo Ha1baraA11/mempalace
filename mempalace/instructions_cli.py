@@ -79,7 +79,7 @@ def apply_mcp_shape(body: str, mcp: str) -> str:
     return body
 
 
-def render_shared_brain_rules(host: str, harness: str, project: str, mcp: str = "light") -> str:
+def render_shared_brain_rules(host: str, harness: str, project: str, mcp: str = "full") -> str:
     """Render the canonical shared-brain rules block for one agent identity.
 
     The template ships inside the package and is test-pinned to the
@@ -89,8 +89,8 @@ def render_shared_brain_rules(host: str, harness: str, project: str, mcp: str = 
     wrapped in HTML-comment markers so a later re-render can replace the
     block in place.
 
-    ``mcp`` selects tool names: ``light`` (default, palace_query / palace_exec /
-    palace_coordinate) or ``full`` (the 45-tool server). Prose is identical;
+    ``mcp`` selects tool names: ``full`` (default, the 45-tool server) or ``light``
+    (palace_query / palace_exec / palace_coordinate). Prose is identical;
     only the tool tokens change.
     """
     host = validate_identity_component("host", host)
@@ -110,7 +110,7 @@ def render_shared_brain_rules(host: str, harness: str, project: str, mcp: str = 
     )
 
 
-def run_rules(host: str, harness: str, project: str, mcp: str = "light"):
+def run_rules(host: str, harness: str, project: str, mcp: str = "full"):
     """Print the rendered shared-brain rules block for the CLI."""
     try:
         print(render_shared_brain_rules(host, harness, project, mcp=mcp))

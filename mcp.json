@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "mempalace": {
-      "command": "mempalace-light-mcp"
+      "command": "mempalace-mcp"
     }
   }
 }

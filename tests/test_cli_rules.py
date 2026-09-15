@@ -87,10 +87,12 @@ class TestRenderSharedBrainRules:
         assert "<PROJECT>" not in rendered
         assert "windows:grok:<project>" in rendered
         assert "windows:grok:mempalace" in rendered
-        assert "palace_coordinate EVENT LIST" in rendered
+        # The default names the 45-tool server the plugins and skills register.
+        assert "mempalace_event_list" in rendered
+        assert "palace_coordinate EVENT LIST" not in rendered
 
-        full = render_shared_brain_rules("windows", "grok", "mempalace", mcp="full")
-        assert "mempalace_event_list" in full
+        light = render_shared_brain_rules("windows", "grok", "mempalace", mcp="light")
+        assert "palace_coordinate EVENT LIST" in light
 
     def test_light_mcp_swaps_tool_tokens_only(self):
         full = render_shared_brain_rules("mac", "claude", "myapp", mcp="full")
@@ -149,7 +151,8 @@ class TestRulesCli:
         assert "windows:codex:mempalace" in result.stdout
         assert "<HOST>" not in result.stdout
         assert "mempalace-shared-brain:start" in result.stdout
-        assert "palace_coordinate EVENT LIST" in result.stdout
+        assert "mempalace_event_list" in result.stdout
+        assert "palace_coordinate EVENT LIST" not in result.stdout
 
     def test_cli_renders_light_mcp(self):
         result = subprocess.run(

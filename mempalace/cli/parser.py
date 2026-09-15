@@ -417,10 +417,10 @@ def main():
     p_rules.add_argument(
         "--mcp",
         choices=["full", "light"],
-        default="light",
+        default="full",
         help=(
-            "Tool names in the block: 'light' (default, palace_query / palace_exec / "
-            "palace_coordinate) or 'full' (45-tool mempalace-mcp)"
+            "Tool names in the block: 'full' (default, the 45-tool mempalace-mcp) or "
+            "'light' (palace_query / palace_exec / palace_coordinate)"
         ),
     )
 
