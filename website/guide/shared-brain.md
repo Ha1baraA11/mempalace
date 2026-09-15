@@ -349,7 +349,8 @@ Four things to get right, in the order people get them wrong:
   interrupted. Only `0` starts work.
 - **`--state-file` is the watcher's cursor, not the agent's.** When omitted
   with `--agent`, the CLI defaults to `~/.mempalace/watch/<agent>.json` and
-  sanitizes `:` to `_` (Windows cannot put colons in filenames). The file
+  sanitizes `:` to `_` after doubling any `_`, so distinct identities never
+  share a file (Windows cannot put colons in filenames). The file
   lets a restarted watcher resume exactly where it stopped: it may replay
   the batch it printed but had not yet checkpointed — up to `--limit`
   events, 50 by default — so dedupe by event id; it never silently misses

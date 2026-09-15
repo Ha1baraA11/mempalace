@@ -768,7 +768,7 @@ def main():
         help=(
             "Persist the cursor here so a restart resumes exactly where it stopped. "
             "When omitted with --agent, defaults to "
-            "~/.mempalace/watch/<agent>.json with ':' sanitized to '_'"
+            "~/.mempalace/watch/<agent>.json with '_' doubled and ':' sanitized to '_'"
         ),
     )
     p_ls_watch.add_argument(

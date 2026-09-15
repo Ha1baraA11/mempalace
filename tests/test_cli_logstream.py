@@ -1261,6 +1261,15 @@ class TestWatchStateFileDefault:
         assert sanitize_watch_state_basename("windows:grok:mempalace") == "windows_grok_mempalace"
         assert sanitize_watch_state_basename("a/b\\c") == "a_b_c"
 
+    def test_sanitize_keeps_underscore_and_colon_identities_distinct(self):
+        from mempalace.logstream import sanitize_watch_state_basename
+
+        left = sanitize_watch_state_basename("a:b_c:proj")
+        right = sanitize_watch_state_basename("a_b:c:proj")
+        assert left == "a_b__c_proj"
+        assert right == "a__b_c_proj"
+        assert left != right
+
     def test_resolve_none_with_agent_defaults_empty_string_disables(self):
         from mempalace.logstream import default_watch_state_file, resolve_watch_state_file
 

@@ -761,6 +761,8 @@ def parse_exec_input(input_data: Any) -> Tuple[str, Dict[str, Any]]:  # noqa: C9
                 or "room" in params
             ):
                 action = "update_drawer"
+            elif "agent_name" in params and ("entry" in params or "content" in params):
+                action = "diary_write"
             elif "content" in params or "document" in params:
                 action = "add_drawer"
             elif "drawer_id" in params:

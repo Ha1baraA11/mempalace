@@ -173,7 +173,8 @@ mempalace logstream watch \
   it stopped rather than replaying or skipping. It advances past events that
   were examined and rejected, not only matches. When omitted with `--agent`,
   the CLI defaults to `~/.mempalace/watch/<agent>.json` and sanitizes `:` to
-  `_` (Windows cannot put colons in filenames). When the cursor cannot be
+  `_` after doubling any `_`, so distinct identities never share a file
+  (Windows cannot put colons in filenames). When the cursor cannot be
   read, or the watcher first started against an empty log, it replays rather
   than jumping to the tip — a restart may cost you a duplicate, never a
   missed delegation.

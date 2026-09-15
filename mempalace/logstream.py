@@ -321,7 +321,9 @@ def sanitize_watch_state_basename(agent: str) -> str:
     agent = (agent or "").strip()
     if not agent:
         raise ValueError("agent identity is required to name a watch state file")
-    safe = agent.replace(":", "_").replace("/", "_").replace("\\", "_")
+    # Double "_" before mapping ":" so identities that differ only in where
+    # "_" and ":" sit (a:b_c:proj vs a_b:c:proj) never share one cursor file.
+    safe = agent.replace("_", "__").replace(":", "_").replace("/", "_").replace("\\", "_")
     if safe in {".", ".."} or not safe:
         raise ValueError("agent identity sanitizes to an empty state-file name")
     return safe
