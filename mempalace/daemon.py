@@ -1411,7 +1411,62 @@ def _registration_state(palace_path: str) -> tuple[str, int | None]:
     return "live", pid
 
 
-def _remove_registration(palace_path: str) -> None:
+def _refuse_live_registration(palace_path: str) -> None:
+    """Raise when a registered daemon is alive but did not answer the probe.
+
+    Its process may still own the palace (the lock, or for backends without a
+    single-writer lease, the endpoint), so a second server must not start and
+    the registration must stay for when it answers again (#2442).
+    """
+    state, registered_pid = _registration_state(palace_path)
+    if state == "live":
+        raise DaemonError(
+            f"daemon pid {registered_pid} is running but did not answer the "
+            "health probe (busy or wedged); not starting a second one. "
+            f"Retry later, or stop that process ({_stop_hint(registered_pid)}) "
+            "and start again."
+        )
+
+
+@contextlib.contextmanager
+def _no_start_in_flight(palace_path: str):
+    """Yield True unless a ``daemon start`` holds the spawn lock right now.
+
+    ``start_daemon`` holds ``start.lock`` from its check until the new daemon
+    answers, and the new daemon writes its registration inside that window.
+    Taking the lock without waiting keeps ``stop_daemon`` from removing a
+    registration a concurrent start has just published. Windows has no spawn
+    lock; there ``_remove_registration(expected_pid=...)`` narrows the race.
+    """
+    if _fcntl is None:
+        yield True
+        return
+    try:
+        lock_fh = open(state_dir(palace_path) / "start.lock", "a")
+    except OSError:
+        # No state directory: nothing can be registered or starting.
+        yield True
+        return
+    with lock_fh:
+        try:
+            _fcntl.flock(lock_fh.fileno(), _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+        except OSError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            _fcntl.flock(lock_fh.fileno(), _fcntl.LOCK_UN)
+
+
+def _remove_registration(palace_path: str, *, expected_pid: int | None = None) -> None:
+    """Remove the endpoint and pid files.
+
+    With ``expected_pid``, only when they still name that pid, so a
+    registration published after the caller classified the old one survives.
+    """
+    if expected_pid is not None and _registered_pid(palace_path) != expected_pid:
+        return
     for stale in (endpoint_path(palace_path), pid_path(palace_path)):
         try:
             stale.unlink()
@@ -1459,6 +1514,9 @@ def start_daemon(
     if existing is not None:
         return existing
     if foreground:
+        # The same guard as the spawn path below: a foreground server must not
+        # start beside a registered daemon that is alive but not answering.
+        _refuse_live_registration(palace_path)
         # Blocks until the daemon stops. A clean stop is a normal exit, not an
         # error — return None so the caller (cmd_daemon) exits 0.
         run_server(palace_path, backend=backend, port=0)
@@ -1494,14 +1552,7 @@ def start_daemon(
     # A pid that is dead, or that now belongs to a process started after the
     # registration was written (pid reuse after a crash), is stale and is
     # replaced below.
-    state, registered_pid = _registration_state(palace_path)
-    if state == "live":
-        raise DaemonError(
-            f"daemon pid {registered_pid} is running but did not answer the "
-            "health probe (busy or wedged); not starting a second one. "
-            f"Retry later, or stop that process ({_stop_hint(registered_pid)}) "
-            "and start again."
-        )
+    _refuse_live_registration(palace_path)
 
     _remove_registration(palace_path)
     cmd = [
@@ -1619,7 +1670,11 @@ def stop_daemon(palace_path: str) -> bool:
             "is kept until it exits."
         )
     if state == "stale":
-        _remove_registration(palace_path)
+        # A start in flight replaces the stale files itself; removing them now
+        # could delete the registration it is about to publish.
+        with _no_start_in_flight(palace_path) as free:
+            if free:
+                _remove_registration(palace_path, expected_pid=pid)
     return False
 
 
