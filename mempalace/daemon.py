@@ -1271,6 +1271,158 @@ def _detached_kwargs(log_path: Path) -> dict[str, Any]:
     return kwargs
 
 
+def _process_start_time_windows(pid: int) -> float | None:
+    """Creation time of ``pid`` as a Unix timestamp via ``GetProcessTimes``."""
+    import ctypes
+    from ctypes import wintypes
+
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    filetime_p = ctypes.POINTER(wintypes.FILETIME)
+    kernel32.GetProcessTimes.restype = wintypes.BOOL
+    kernel32.GetProcessTimes.argtypes = (
+        wintypes.HANDLE,
+        filetime_p,
+        filetime_p,
+        filetime_p,
+        filetime_p,
+    )
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+
+    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+    if not handle:
+        return None
+    try:
+        creation, exited, kernel, user = (wintypes.FILETIME() for _ in range(4))
+        ok = kernel32.GetProcessTimes(
+            handle,
+            ctypes.byref(creation),
+            ctypes.byref(exited),
+            ctypes.byref(kernel),
+            ctypes.byref(user),
+        )
+        if not ok:
+            return None
+        ticks = (creation.dwHighDateTime << 32) | creation.dwLowDateTime
+        # FILETIME counts 100 ns intervals since 1601-01-01.
+        return ticks / 10_000_000 - 11_644_473_600
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _process_start_time_linux(pid: int) -> float | None:
+    """Start time of ``pid`` from ``/proc`` (boot time plus clock ticks)."""
+    try:
+        stat = Path(f"/proc/{int(pid)}/stat").read_text(encoding="utf-8")
+        # The command name can contain spaces and parentheses; fields resume
+        # after the last ")". starttime is field 22, index 19 from "state".
+        fields = stat[stat.rindex(")") + 2 :].split()
+        start_ticks = int(fields[19])
+        boot = next(
+            int(line.split()[1])
+            for line in Path("/proc/stat").read_text(encoding="utf-8").splitlines()
+            if line.startswith("btime ")
+        )
+        return boot + start_ticks / os.sysconf("SC_CLK_TCK")
+    except (OSError, ValueError, IndexError, StopIteration):
+        return None
+
+
+def _process_start_time_ps(pid: int) -> float | None:
+    """Start time of ``pid`` from ``ps -o lstart=`` (macOS and other POSIX)."""
+    try:
+        out = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(int(pid))],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            env={**os.environ, "LC_ALL": "C"},
+            check=False,
+        ).stdout.strip()
+        if not out:
+            return None
+        return time.mktime(time.strptime(out, "%a %b %d %H:%M:%S %Y"))
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
+def _process_start_time(pid: int) -> float | None:
+    """When ``pid`` started, as a Unix timestamp, or None when it cannot be read.
+
+    Used to tell a live registered daemon from an unrelated process that has
+    since been given the same pid. ``psutil`` is only a development
+    dependency, so it is used when present and the platform source otherwise.
+    """
+    if pid <= 0:
+        return None
+    try:
+        import psutil  # type: ignore[import-not-found]
+    except ImportError:
+        psutil = None
+    if psutil is not None:
+        try:
+            return float(psutil.Process(int(pid)).create_time())
+        except Exception:
+            return None
+    if os.name == "nt":
+        try:
+            return _process_start_time_windows(pid)
+        except OSError:
+            return None
+    if Path("/proc/self/stat").exists():
+        return _process_start_time_linux(pid)
+    return _process_start_time_ps(pid)
+
+
+# A process that started after the registration was written cannot be the
+# daemon that wrote it. The slack absorbs timestamp granularity between the
+# process start clock and file modification times.
+_REGISTRATION_START_SLACK_SECONDS = 2.0
+
+
+def _registration_state(palace_path: str) -> tuple[str, int | None]:
+    """Classify the daemon registration for ``palace_path``.
+
+    Returns ``("none", None)`` when nothing is registered, ``("stale", pid)``
+    when the registered pid is dead or now belongs to a process that started
+    after the registration was written (pid reuse after a crash), and
+    ``("live", pid)`` when the pid is alive and is, or may be, the daemon that
+    registered. An unreadable start time counts as live: refusing is
+    recoverable, discarding a live owner's registration is not (#2442).
+    """
+    pid = _registered_pid(palace_path)
+    if pid is None:
+        return "none", None
+    if not _pid_alive(pid):
+        return "stale", pid
+    started = _process_start_time(pid)
+    if started is None:
+        return "live", pid
+    written = []
+    for path in (endpoint_path(palace_path), pid_path(palace_path)):
+        try:
+            written.append(path.stat().st_mtime)
+        except OSError:
+            pass
+    if written and started > max(written) + _REGISTRATION_START_SLACK_SECONDS:
+        return "stale", pid
+    return "live", pid
+
+
+def _remove_registration(palace_path: str) -> None:
+    for stale in (endpoint_path(palace_path), pid_path(palace_path)):
+        try:
+            stale.unlink()
+        except OSError:
+            pass
+
+
+def _stop_hint(pid: int) -> str:
+    return f"taskkill /PID {pid} /F" if os.name == "nt" else f"kill {pid}"
+
+
 def _registered_pid(palace_path: str) -> int | None:
     """Pid recorded by the last daemon that registered for ``palace_path``.
 
@@ -1339,19 +1491,19 @@ def start_daemon(
     # a replacement would die at startup -- and unlinking the registration
     # first would leave the live owner unreachable (#2442). Refuse instead of
     # spawning; ``daemon stop`` is the explicit way to replace it.
-    registered_pid = _registered_pid(palace_path)
-    if registered_pid is not None and _pid_alive(registered_pid):
+    # A pid that is dead, or that now belongs to a process started after the
+    # registration was written (pid reuse after a crash), is stale and is
+    # replaced below.
+    state, registered_pid = _registration_state(palace_path)
+    if state == "live":
         raise DaemonError(
             f"daemon pid {registered_pid} is running but did not answer the "
             "health probe (busy or wedged); not starting a second one. "
-            "Retry later or run `mempalace daemon stop` first."
+            f"Retry later, or stop that process ({_stop_hint(registered_pid)}) "
+            "and start again."
         )
 
-    for stale in (endpoint_path(palace_path), pid_path(palace_path)):
-        try:
-            stale.unlink()
-        except OSError:
-            pass
+    _remove_registration(palace_path)
     cmd = [
         sys.executable,
         "-m",
@@ -1446,11 +1598,29 @@ def submit_job(
 
 
 def stop_daemon(palace_path: str) -> bool:
+    """Ask the registered daemon to stop. True when a running daemon was asked.
+
+    When the health probe fails, the registration decides what happens: a dead
+    pid, or a pid reused by an unrelated process, is a stale registration and
+    is removed so the next ``daemon start`` works. A live daemon that does not
+    answer cannot be asked to stop over HTTP, so its registration is left in
+    place (#2442) and the error names the process to stop instead.
+    """
     client = get_client_if_running(palace_path)
-    if client is None:
-        return False
-    client.shutdown()
-    return True
+    if client is not None:
+        client.shutdown()
+        return True
+    state, pid = _registration_state(palace_path)
+    if state == "live":
+        raise DaemonError(
+            f"daemon pid {pid} is registered and running but did not answer the "
+            "health probe (busy or wedged), so it cannot be asked to stop. Wait "
+            f"for it, or stop that process ({_stop_hint(pid)}); its registration "
+            "is kept until it exits."
+        )
+    if state == "stale":
+        _remove_registration(palace_path)
+    return False
 
 
 def _cmd_serve(args) -> None:
