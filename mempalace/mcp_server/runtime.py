@@ -321,7 +321,7 @@ def _acquire_writer_lease_for_http_startup() -> tuple[bool, str]:
         return ok, reason
 
     logger.warning(
-        "Writable MCP HTTP startup is waiting up to %.0f s for the writer lease: %s",
+        "Writable MCP HTTP startup is waiting up to %g s for the writer lease: %s",
         budget,
         reason,
     )
