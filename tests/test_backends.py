@@ -155,6 +155,40 @@ def test_chroma_collection_delegates_writes():
     assert kinds == ["add", "upsert", "delete", "count"]
 
 
+def test_chroma_clients_are_opened_with_telemetry_disabled(monkeypatch, tmp_path):
+    """Both client paths must say anonymized_telemetry=False explicitly (GHSA-8h77)."""
+    seen = []
+
+    def fake_client(path, settings=None, **kwargs):
+        seen.append(settings)
+        return object()
+
+    monkeypatch.setattr(chroma_module.chromadb, "PersistentClient", fake_client)
+    monkeypatch.setattr(
+        chroma_module.ChromaBackend, "_prepare_palace_for_open", staticmethod(lambda p: None)
+    )
+
+    ChromaBackend()._client(str(tmp_path))
+    ChromaBackend.make_client(str(tmp_path))
+
+    assert len(seen) == 2, f"expected both client paths to open one client each, got {len(seen)}"
+    for settings in seen:
+        assert settings is not None, "client opened without explicit Settings"
+        assert settings.anonymized_telemetry is False
+
+
+def test_chroma_telemetry_env_default_is_off():
+    """Importing mempalace opts out for any chromadb client in the process."""
+    import os
+
+    from chromadb.config import Settings
+
+    import mempalace  # noqa: F401  (import for its side effects)
+
+    assert os.environ.get("ANONYMIZED_TELEMETRY") == "False"
+    assert Settings().anonymized_telemetry is False
+
+
 def test_registry_exposes_chroma_by_default():
     names = available_backends()
     assert "chroma" in names
