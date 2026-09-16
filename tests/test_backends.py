@@ -2154,7 +2154,8 @@ def test_chroma_backend_preflights_metadata_before_persistent_client(tmp_path, m
         pass
 
     monkeypatch.setattr(
-        "mempalace.backends.chroma.chromadb.PersistentClient", lambda path: DummyClient()
+        "mempalace.backends.chroma.chromadb.PersistentClient",
+        lambda path, settings=None: DummyClient(),
     )
 
     backend = ChromaBackend()
@@ -2197,7 +2198,8 @@ def test_chroma_backend_quarantine_rearms_on_mtime_refresh(tmp_path, monkeypatch
         pass
 
     monkeypatch.setattr(
-        "mempalace.backends.chroma.chromadb.PersistentClient", lambda path: DummyClient()
+        "mempalace.backends.chroma.chromadb.PersistentClient",
+        lambda path, settings=None: DummyClient(),
     )
 
     backend = ChromaBackend()
@@ -2246,7 +2248,8 @@ def test_chroma_backend_requarantines_after_inode_replacement(tmp_path, monkeypa
         pass
 
     monkeypatch.setattr(
-        "mempalace.backends.chroma.chromadb.PersistentClient", lambda path: DummyClient()
+        "mempalace.backends.chroma.chromadb.PersistentClient",
+        lambda path, settings=None: DummyClient(),
     )
 
     backend = ChromaBackend()
@@ -2298,7 +2301,7 @@ def test_chroma_backend_resets_system_cache_on_inode_change(tmp_path, monkeypatc
         def close(self):
             events.append(("close", self.label))
 
-    def record_open(path):
+    def record_open(path, settings=None):
         events.append(("open", path))
         return DummyClient(path)
 
