@@ -1,6 +1,6 @@
 # MemPalace - Codex CLI Plugin
 
-Give your AI a persistent memory -- mine projects and conversations into a searchable palace backed by ChromaDB, with 35 MCP tools, auto-save hooks, and guided skills.
+Give your AI a persistent memory -- mine projects and conversations into a searchable palace backed by ChromaDB, with 44 MCP tools, auto-save hooks, and guided skills.
 
 ## Prerequisites
 
@@ -10,31 +10,23 @@ Give your AI a persistent memory -- mine projects and conversations into a searc
 
 ## Installation
 
-### Local Repository Install
-
-1. Clone the MemPalace repository:
+1. Add the repo to the Codex marketplaces:
 
 ```bash
-git clone https://github.com/MemPalace/mempalace.git
-cd mempalace
+codex plugin marketplace add MemPalace/mempalace
 ```
 
-2. Install the Python package so the `mempalace-mcp` script lands on
-   your PATH (the bundled `plugin.json` invokes it by bare name):
+2. Install the plugin:
 
 ```bash
-uv tool install --editable .   # or: pip install -e .
-```
-
-   Plain `uv sync` is **not** enough here — it installs the scripts into
-   `.venv/bin/`, which Codex will not find unless you activate the venv
-   before launching Codex.
-
-3. Add the local marketplace and install the plugin:
-
-```bash
-codex plugin marketplace add .
 codex plugin add mempalace@mempalace
+```
+
+3. Initialize your palace in the Codex TUI:
+
+```bash
+codex
+> $mempalace:mempalace init
 ```
 
 4. Verify the plugin and MCP server:
@@ -51,17 +43,21 @@ Start a fresh Codex thread after installing so Codex loads the new skills and MC
 
 | Skill | Description |
 |-------|-------------|
-| `/help` | Show available commands and usage tips |
-| `/init` | Initialize a new memory palace |
-| `/search` | Semantic search across all mined memories |
-| `/mine` | Mine a project or conversation into your palace |
-| `/status` | Show palace status, room counts, and health |
-| `mempalace-recall` | Search-before-answer protocol for natural questions like "do you remember", "what did we decide", and "where did we leave off" |
+| `$mempalace:mempalace` | Install, configure, and operate MemPalace, including a private local palace, a shared-brain hub, or a client joining an existing hub |
+| `$mempalace:mempalace-recall` | Recall protocol for MemPalace — search the palace before answering about past work, people, projects, or prior decisions |
+| `$mempalace:mempalace-task` | Create, hand off, claim, execute, and close agent tasks through the MemPalace logstream |
 
-For normal work, users should not need to invoke `mempalace-recall`
-manually. Codex should select it when a question is about past work,
-prior decisions, people, projects, earlier sessions, or anything that
-may already be filed in the palace.
+### Skill Commands
+
+The main `$mempalace:mempalace` skill can be invoked with five different subcommands. `$mempalace <command>` can be used as a short form invocation. 
+
+| Command | Description |
+|---------| ------------|
+| `$mempalace help` | Show available commands and usage tips |
+| `$mempalace init` | Initialize a new memory palace |
+| `$mempalace search` | Semantic search across all mined memories |
+| `$mempalace mine` | Mine a project or conversation into your palace |
+| `$mempalace status` | Show palace status, room counts, and health |
 
 ## Hooks
 

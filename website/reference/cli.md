@@ -1,6 +1,22 @@
 # CLI Commands
 
 All commands accept `--palace <path>` to override the default palace location.
+The top-level command also accepts `--backend <name>` to select a storage
+backend such as `sqlite_exact`, `milvus`, `qdrant`, or `pgvector`.
+
+## `mempalace update`
+
+Release checks are disabled by default. Enable weekly checks explicitly with
+`mempalace update configure --enable --installer uv-tool` (using `pipx` or
+`pip` when that is how the runtime was installed), or disable them with `--disable`.
+`mempalace update check` performs an explicit check regardless of that setting.
+`mempalace update plan` prints the runtime, skill, restart, and tool-refresh
+actions but never executes them. Command actions use structured `argv`; for a
+`pip` installation the first argument is the exact interpreter running
+MemPalace, not whichever `python` happens to be on `PATH`. For an explicit check made without saved setup
+state, pass the matching installer to `plan --installer`. Cached state appears in `mempalace_status` so
+agents can ask the user to authorize an upgrade without blocking on a network
+request.
 
 ## `mempalace init`
 
@@ -134,7 +150,20 @@ Rebuild palace vector index from stored data. Fixes segfaults after database cor
 mempalace repair
 ```
 
-Creates a backup at `<palace_path>.backup` before rebuilding.
+Creates a backup at `<palace_path>.backup` before rebuilding, replacing any backup already there.
+
+| Flag | Description |
+|------|-------------|
+| `rebuild-index` | Positional alias for `--mode from-sqlite --archive-existing` |
+| `--mode` | `legacy` (default), `max-seq-id`, or `from-sqlite` |
+| `--dry-run` | Print what the repair would do and exit without modifying the palace |
+| `--yes` | Skip confirmation for destructive changes |
+| `--backup` | Back up SQLite before mutation (default: on) |
+| `--source` | Source palace for `--mode from-sqlite` (defaults to `--palace`) |
+| `--archive-existing` | Rename the existing palace to `<palace>.pre-rebuild-<timestamp>` first |
+| `--segment` | Segment UUID filter for `--mode max-seq-id` |
+| `--from-sidecar` | Pre-corruption `chroma.sqlite3` to copy clean `max_seq_id` values from |
+| `--confirm-truncation-ok` | Override the truncation safety guard. Disables the abort that protects you when the collection layer returns fewer drawers than SQLite holds |
 
 ## `mempalace mcp`
 
@@ -172,6 +201,22 @@ mempalace instructions help
 mempalace instructions status
 ```
 
+## `mempalace rules`
+
+Render the canonical shared-brain system-prompt block, marker-wrapped so
+a later re-render can replace it in place. Identity is
+`host:harness:project` (stable lowercase tokens). `--project` is the
+example workspace name; the block tells the agent to compose the project
+component from the current workspace.
+
+```bash
+mempalace rules --host mac --harness claude --project myapp
+mempalace rules --host windows --harness grok --project mempalace --mcp light
+```
+
+`--mcp full` (default) names the 45-tool `mempalace-mcp` tools.
+`--mcp light` names the 3-tool triad. Prose is identical.
+
 ## `mempalace logstream`
 
 Agent coordination events — delegate work, wait for replies, acknowledge
@@ -187,6 +232,10 @@ mempalace logstream list --stream project/myapp --room delegation --json
 mempalace logstream wait --correlation-id task_123 --type patch.ready \
   --timeout-ms 300000 --json
 mempalace logstream ack evt_... --from-agent mac --status applied
+
+# Background watcher: blocks, wakes on what needs you, exits 0 on a match
+mempalace logstream watch --agent mac:claude:myapp --type task.request --type task.reply --type patch.ready \
+  --json
 ```
 
 | Subcommand | Description |
@@ -194,10 +243,69 @@ mempalace logstream ack evt_... --from-agent mac --status applied
 | `append` | Append an immutable event (`--type`, `--stream`, `--room`, `--from-agent` required; `--body`/`--body-file`, `--artifact-id` repeatable) |
 | `list` | List events, oldest first (all routing fields as filters, `--since-event-id`, `--limit`) |
 | `wait` | Long-poll until a match or timeout (`--timeout-ms`, max 300000; exits `2` on timeout) |
+| `watch` | Background watcher: re-arms past the `wait` cap, carries the cursor, and exits `0` on a match / `2` on `--idle-exit-ms`. `--agent ID` is shorthand for `--to-agent ID --exclude-from-agent ID` so your own `*` broadcasts never wake you. Filters repeat to mean "or"; `--state-file` resumes exactly (defaults from `--agent`, with `_` doubled and `:` sanitized to `_`); `--follow` stays alive past the first match; a cursorless first run starts at the tip (`--from-start` to replay); exits `130` if interrupted; `--follow --json` emits NDJSON — one batch envelope per line (`{"events": [...], "count": N, "cursor": ...}`), not one event per line |
 | `ack` | Append an `event.ack` for an event (`--from-agent` required, `--status`, `--body`) |
 | `sync` | Pull missing events/artifacts from peer replicas (`--peer URL --token T`, or all peers in `peers.json`) |
 
 All subcommands accept `--json` for scriptable output.
+
+## `mempalace task`
+
+High-level task creation and controlled execution over the logstream. This
+interface creates the complete canonical `task.request` envelope and prints a
+short handoff that can be pasted into a destination agent; callers do not need
+to construct event fields or correlation ids themselves. Like the other
+logstream CLI commands, it operates on the local palace. A client connected to
+a remote shared-brain hub should call the equivalent
+`mempalace_task_create` MCP tool so the task is appended on the hub.
+
+```bash
+mempalace task create \
+  --project myapp \
+  --from-agent mac-claude \
+  --to-agent windows-codex \
+  --goal "Fix the flaky integration test." \
+  --branch fix/flaky-integration \
+  --base-commit 2668053 \
+  --done "The focused test passes and a patch is submitted."
+```
+
+The command appends an immutable `task.request`, generates a
+`task_<goal>_<entropy>` correlation id, and prints a `Ready to paste` line.
+Use `--goal-file` or `--done-file` when the exact text is multiline. `--json`
+returns `{"task": <event>, "handoff": <line>}`.
+`--base-commit` must be an immutable hexadecimal object id (abbreviated or
+full), not a branch or tag whose target could move after the event is stored.
+
+An explicitly controlled workflow can start a supported headless runner from
+the stored task:
+
+```bash
+mempalace task launch task_fix_the_flaky_integration_test_7f3a9c10 \
+  --runner codex --workspace /path/to/trusted/checkout
+```
+
+For a remote-only MCP client, fetch the full single `task.request` event through
+`mempalace_event_list`, save the exact event object as JSON on the destination
+machine, and use `--task-file` instead of a task id. This avoids accidentally
+resolving the task from an unrelated local palace:
+
+```bash
+mempalace task launch --task-file task-request.json \
+  --runner codex --workspace /path/to/trusted/checkout
+```
+
+Supported runners are `codex` and `claude`. The launcher verifies the task's
+addressed identity, refuses to override it, rejects a runner that conflicts
+with a conventional `*-codex` or `*-claude` identity, releases its logstream
+connection, and starts the runner without a shell. Broadcast tasks require a
+concrete `--agent`. It does not add permission-bypass flags or weaken the
+runner's sandbox and approval policy.
+
+| Subcommand | Description |
+|------------|-------------|
+| `create` | Append a canonical task request and print a pasteable handoff (`--project`, `--from-agent`, `--to-agent`, `--goal`/`--goal-file`, `--branch`, `--base-commit`, and `--done`/`--done-file`) |
+| `launch` | Resolve and execute an existing task with `--runner codex\|claude` in a trusted `--workspace`; `--agent` accepts broadcasts but cannot impersonate an addressed worker |
 
 ## `mempalace artifact`
 
@@ -214,132 +322,3 @@ mempalace artifact get art_... --out /tmp/handoff.patch
 |------------|-------------|
 | `put` | Store content (`--kind patch\|file\|log\|json\|note`, `--created-by` required; `--content`, `--file`, or stdin) |
 | `get` | Print exact content to stdout, or `--out FILE`; `--json` for metadata |
-
-## `mempalace replica`
-
-Memory replication across your machines (RFC 004; see
-[The Replicated Palace](/concepts/replicated-palace)). Bootstraps a new
-replica from its peers and moves precomputed vectors between machines.
-
-```bash
-# Bootstrap: fold every peer's authored content into this palace.
-# STOP the local hub first — this writes the palace directly.
-mempalace replica pull --with-vectors
-
-# One specific origin instead of peers.json:
-mempalace replica pull --peer https://desktop.example.com --token "$TOKEN"
-
-# Precompute vectors into the portable cache (safe alongside a live hub):
-mempalace replica embed-cache --batch 512 --json
-```
-
-| Subcommand | Description |
-|------------|-------------|
-| `pull` | Fold drawers + knowledge graph from origins (`--peer`/`--token` or `peers.json`; `--with-vectors` uses origin-precomputed vectors, `--no-kg`, `--no-reconcile`) |
-| `embed-cache` | Bulk-embed local content into `vector_cache.sqlite3` so peers can pull `--with-vectors` (`--model`, `--batch`, `--all`) |
-
-`pull` requires the local hub to be stopped (single-writer rule) and the
-origins to be quiescent (no active mines). Pulls are insert-only and
-resumable — re-running heals any gap. Raise
-`MEMPALACE_SYNC_HTTP_TIMEOUT` (seconds, default 30) for large bootstraps.
-
-## `mempalace oplog`
-
-The canonical memory op-log (RFC 004 step 2a — currently in dual-write
-shadow). Every drawer and knowledge-graph write also lands as a
-provenance-stamped op in `oplog.sqlite3`; ops travel between replicas and
-fold into their stores.
-
-```bash
-mempalace oplog status --json    # counts, kind histogram, version vector
-mempalace oplog sync             # pull missing ops from peers
-mempalace oplog fold             # apply pulled ops to the local store (hub stopped)
-mempalace oplog promote          # one-time: pre-oplog drawers become drawer.add ops
-mempalace oplog verify           # replay ops vs the live store — the cutover gate
-```
-
-| Subcommand | Description |
-|------------|-------------|
-| `status` | Op counts, per-kind histogram, and this replica's version vector |
-| `sync` | Anti-entropy pull of missing memory ops (`--peer URL --token T`, or all peers) |
-| `fold` | Apply pulled remote ops to the local store — stop the hub first; a running hub folds on its own sync cadence |
-| `promote` | Emit `drawer.add` ops for locally-authored drawers that predate the op-log (mined sets, pre-shadow captures). Idempotent and resumable (`--dry-run`, `--limit N`); safe alongside a live hub — reads the store, writes only the op-log |
-| `verify` | Replay the op-log against the live store; exits `1` on divergence |
-
-Promotion is how an **existing palace's history** becomes op-carried: after
-one clean `promote`, the op-log covers everything the replica ever authored,
-and future replicas receive that history as ops instead of snapshot pulls.
-Remote-stamped copies are never promoted — each origin promotes its own.
-
-A running hub does all of this automatically every `MEMPALACE_SYNC_INTERVAL`
-seconds (default 15): logstream sync, memory-op sync, then the fold. The CLI
-verbs exist for bootstraps, offline machines, and inspection.
-
-## `mempalace migrate-ids`
-
-The v4 content-pure id migration (RFC 004 id purity). Rewrites drawer ids from
-the location-addressed forms (`drawer_<wing>_<room>_<hash>`) to content-pure
-`drawer_<hash(content)>`, so organization (wing/room) becomes plain metadata and
-the same content anywhere in the mesh is the same drawer — content-addressed
-cross-machine dedup.
-
-```bash
-mempalace migrate-ids                              # dry-run plan (writes nothing)
-mempalace migrate-ids --json                       # machine-readable plan
-mempalace migrate-ids --apply --target ~/palace-v4 # materialize a v4 palace (copy-first)
-```
-
-| Option | Description |
-|--------|-------------|
-| *(none)* | Dry-run plan: drawers that change, content-collision groups that will MERGE, and KG/tunnel refs to remap. Writes nothing. |
-| `--apply` | Materialize the migration. Requires `--target`. |
-| `--target <path>` | Fresh palace path to write the migrated v4 palace into (must differ from the source — the source is never mutated). |
-| `--json` | Machine-readable plan output |
-
-The migration is **copy-first**: `--apply` reads the source and writes a new v4
-palace into `--target`, copying vectors (never re-deriving them) and merging
-content-identical drawers into one. The source palace is left untouched.
-
-Content collisions **merge**: when several drawers hold identical content they
-collapse to one v4 drawer (placement chosen by latest `filed_at`), and every
-merged-away id is repointed so the knowledge graph's `source_drawer_id`
-provenance and any tunnels still resolve.
-
-Because a v4 id is a pure function of content, every replica migrates
-independently and converges on identical ids — no migration is ever synced.
-
-## `mempalace reconcile-ids`
-
-Drain legacy v3-keyed "ghost" drawers that remain after the write-flip. New
-writes already mint content-pure v4 ids; this command rewrites older store rows
-to their content-hash ids, or drops a ghost when the same content already exists
-under its v4 id.
-
-```bash
-mempalace reconcile-ids          # dry-run plan (writes nothing)
-mempalace reconcile-ids --json   # machine-readable plan/output
-mempalace reconcile-ids --apply  # write the drain; stop the hub first
-```
-
-| Option | Description |
-|--------|-------------|
-| *(none)* | Dry-run plan: legacy ghosts, rows to rewrite, and duplicates to drop. Writes nothing. |
-| `--apply` | Rewrite/drop the ghosts in place. Stop the hub first; this command writes the palace directly. |
-| `--force-live-hub` | Allow `--apply` even when a live write-capable hub is registered. Manual recovery only. |
-| `--json` | Machine-readable output |
-
-The write-flip and reconcile drain are separate. During the gap, ordinary
-search may show duplicate logical content under a legacy id and its v4
-content-hash id. Treat the migration as stable only after `reconcile-ids
---apply` reports zero remaining legacy ghosts.
-
-Full runbook (run against the target, validate, then swap it in):
-
-```bash
-mempalace migrate-ids --apply --target ~/palace-v4
-mempalace --palace ~/palace-v4 compress        # rebuild the closet index at v4 ids
-mempalace --palace ~/palace-v4 oplog promote   # build the v4 op-log
-mempalace --palace ~/palace-v4 oplog verify    # must report CLEAN
-mempalace --palace ~/palace-v4 reconcile-ids   # confirm no legacy ghosts
-mempalace --palace ~/palace-v4 search "..."    # confirm recall
-```
