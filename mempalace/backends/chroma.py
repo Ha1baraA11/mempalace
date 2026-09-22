@@ -516,29 +516,30 @@ _HNSW_MIN_BYTES_PER_ELEMENT = 256
 
 
 def _hnsw_rust_payload_is_complete(seg_dir: str) -> bool:
-    """Return whether a pickle-free Rust HNSW payload has all four files.
+    """Return whether a pickle-free segment is a finished v1 HNSW payload.
 
-    ChromaDB's Rust HNSW writer (1.5.x) can leave a healthy segment without
-    ``index_metadata.pickle``.  The binary header, length table, level-0
-    payload, and link-list file are the durable files for that format.  Keep
-    the older missing-pickle guard for partial writes that do not have this
-    complete shape.
+    A missing pickle is normally a sub-threshold index or a torn persist.
+    Accept it only when ``header.bin`` is the known v1 layout with possible
+    counts and ``length.bin`` is a float table large enough for those counts.
+    Anything else, including a header that merely unpacks, falls through to
+    the missing-pickle guard.
     """
     required = ("header.bin", "data_level0.bin", "length.bin", "link_lists.bin")
     try:
         if not all(os.path.isfile(os.path.join(seg_dir, name)) for name in required):
             return False
-        if (
-            os.path.getsize(os.path.join(seg_dir, "data_level0.bin"))
-            <= _HNSW_MISSING_METADATA_DATA_FLOOR
-        ):
-            return False
-        if os.path.getsize(os.path.join(seg_dir, "length.bin")) <= 0:
-            return False
+        length_size = os.path.getsize(os.path.join(seg_dir, "length.bin"))
     except OSError:
         return False
 
-    if _read_hnsw_binary_header(seg_dir) is None:
+    header = _read_hnsw_binary_header(seg_dir)
+    if header is None or header.get("persistence_version") != _HNSW_PERSISTENCE_VERSION:
+        return False
+    if _hnsw_binary_header_has_impossible_counts(header):
+        return False
+
+    count = int(header["cur_element_count"])
+    if length_size % 4 != 0 or length_size < count * 4:
         return False
 
     ratio = _hnsw_link_to_data_ratio(seg_dir)
@@ -716,13 +717,13 @@ def _segment_appears_healthy(seg_dir: str) -> bool:
     ``0x2e`` (the protocol/terminator byte sequence chromadb serializes
     with).
 
-    When metadata is missing, the segment may be a complete Rust-format
-    payload (which does not write the pickle), a *never-persisted* segment
-    (sub-threshold: fewer records than ``batch_size``), or a *partially
-    flushed* segment (persist started but crashed).  The complete Rust shape
-    is identified by its valid ``header.bin`` plus all four durable HNSW
-    files.  For older layouts, an empty/absent ``link_lists.bin`` together
-    with absent metadata still means no persist was attempted.
+    When metadata is missing, the segment may be a finished v1 payload
+    (valid header and a length table that covers its element count), a
+    *never-persisted* segment (sub-threshold: fewer records than
+    ``batch_size``), or a *partially flushed* segment (persist started but
+    crashed).  A header that merely unpacks is not finished.  For every
+    other layout, an empty/absent ``link_lists.bin`` together with absent
+    metadata still means no persist was attempted.
 
     Deliberately format-sniffs only; never deserializes. Deserialization
     can execute arbitrary code, and the byte-sniff is sufficient to

@@ -27,13 +27,26 @@ def _write_segment(
         (seg_dir / "index_metadata.pickle").write_bytes(b"\x80" + b"x" * 16 + b"\x2e")
 
 
-def _write_rust_segment(seg_dir: Path, *, link_size: int = 0) -> None:
-    """Write the complete pickle-free HNSW file shape used by Rust Chroma."""
+def _write_rust_segment(
+    seg_dir: Path,
+    *,
+    link_size: int = 0,
+    header: bytes | None = None,
+    length_size: int = 400,
+    element_count: int = 10,
+) -> None:
+    """Write a pickle-free four-file HNSW directory.
+
+    The default header is v1 with ``element_count`` elements and a length
+    table large enough to hold one float per element.
+    """
     seg_dir.mkdir(parents=True, exist_ok=True)
     (seg_dir / "data_level0.bin").write_bytes(b"\0" * 2_000)
-    (seg_dir / "length.bin").write_bytes(b"\0" * 400)
+    (seg_dir / "length.bin").write_bytes(b"\0" * length_size)
     (seg_dir / "link_lists.bin").write_bytes(b"\0" * link_size)
-    (seg_dir / "header.bin").write_bytes(_HNSW_HEADER_PREFIX.pack(1, 64, 1_000, 10))
+    if header is None:
+        header = _HNSW_HEADER_PREFIX.pack(1, 64, 1_000, element_count)
+    (seg_dir / "header.bin").write_bytes(header)
 
 
 def test_hnsw_link_to_data_ratio_reports_payload_size_ratio(tmp_path):
@@ -68,11 +81,27 @@ def test_segment_health_keeps_reasonable_payload_with_valid_pickle(tmp_path):
 
 
 def test_segment_health_accepts_complete_rust_payload_without_pickle(tmp_path):
-    """Rust Chroma's complete four-file payload is healthy without a pickle."""
+    """A v1 header whose length table covers the element count is healthy."""
     seg_dir = tmp_path / "11111111-2222-3333-4444-555555555555"
     _write_rust_segment(seg_dir, link_size=128)
 
     assert _segment_appears_healthy(str(seg_dir))
+
+
+def test_segment_health_keeps_zero_byte_link_lists_without_pickle(tmp_path):
+    """An empty link list with a real v1 header is the sub-threshold shape."""
+    seg_dir = tmp_path / "11111111-2222-3333-4444-555555555555"
+    _write_rust_segment(seg_dir, link_size=0)
+
+    assert _segment_appears_healthy(str(seg_dir))
+
+
+def test_segment_health_rejects_unpacked_garbage_header_with_link_data(tmp_path):
+    """A header that only unpacks is not a finished payload."""
+    seg_dir = tmp_path / "11111111-2222-3333-4444-555555555555"
+    _write_rust_segment(seg_dir, link_size=128, header=b"\0" * _HNSW_HEADER_PREFIX.size)
+
+    assert not _segment_appears_healthy(str(seg_dir))
 
 
 def test_quarantine_catches_link_bloat_without_mtime_drift(tmp_path):
