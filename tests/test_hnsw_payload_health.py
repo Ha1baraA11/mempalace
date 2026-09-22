@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from typing import Optional
 
 from mempalace.backends.chroma import (
     _HNSW_LINK_TO_DATA_MAX_RATIO,
@@ -31,7 +32,7 @@ def _write_rust_segment(
     seg_dir: Path,
     *,
     link_size: int = 0,
-    header: bytes | None = None,
+    header: Optional[bytes] = None,
     length_size: int = 400,
     element_count: int = 10,
 ) -> None:
